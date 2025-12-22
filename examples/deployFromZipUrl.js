@@ -1,5 +1,4 @@
 import { StackMachine } from "stackmachine";
-import { readFileSync } from "fs";
 
 const STACKMACHINE_TOKEN = process.env.STACKMACHINE_TOKEN;
 

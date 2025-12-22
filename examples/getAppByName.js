@@ -1,10 +1,9 @@
-import { init, StackMachine } from "@wasmer/sdk-lite";
-// import { init, StackMachine } from "../../dist/index.js";
+import { StackMachine } from "stackmachine";
 
 const STACKMACHINE_TOKEN = process.env.STACKMACHINE_TOKEN;
 
 const client = await StackMachine.init({
-    token: STACKMACHINE_TOKEN
+    token: STACKMACHINE_TOKEN || "wap_sm_demo"
 });
 
 const app = await client.getApp({
