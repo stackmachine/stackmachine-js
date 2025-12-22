@@ -9,5 +9,5 @@ importers:
   .:
     dependencies:
       stackmachine:
-        specifier: ../..
-        version: link:../..
+        specifier: ../
+        version: link:..

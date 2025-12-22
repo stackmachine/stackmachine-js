@@ -3,17 +3,13 @@ import { init, StackMachine } from "@wasmer/sdk-lite";
 
 const STACKMACHINE_TOKEN = process.env.STACKMACHINE_TOKEN;
 
-await init({
+const client = await StackMachine.init({
     token: STACKMACHINE_TOKEN
 });
 
-// const app = await StackMachine.getApp({
-//     owner: "theowner",
-//     name: "appname"
-// });
-
-const app = await StackMachine.getApp({
-    id: "da_XYZ"
+const app = await client.getApp({
+    owner: "theowner",
+    name: "appname"
 });
 
 console.log("App", app);

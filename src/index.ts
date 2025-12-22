@@ -35,6 +35,8 @@ const {
 
 const DEFAULT_API_URL = "https://api.stackmachine.com/graphql";
 
+export { createZip };
+
 export type StackMachineRegistryConfig = {
   apiUrl?: string;
   token?: string;
@@ -386,33 +388,13 @@ export class StackMachine {
     });
     return success;
   }
-  async deployApp({
-    files,
-    setUploadFilesProgress,
-    onZipCreated,
-    ...input
-  }: srcAutobuildMutation$variables["input"] & {
-    files: {
-      [key: string]: Blob | string | Uint8Array | ReadableStream | File;
-    };
-    onZipCreated?: (zipFile: Blob) => void | Promise<void>;
-    setUploadFilesProgress?: (progress: number) => void;
-  }): Promise<AutobuildApp> {
+  async uploadFile(file: Blob, setUploadFilesProgress?: (progress: number) => void): Promise<string> {
     const env = environment();
-    if (files) {
-      const zipFile = await createZip(files);
-      await Promise.resolve(onZipCreated?.(zipFile));
-      // Save zip file to disk
-      // const zipFileName = `rand.zip`;
-      // const zipFilePath = path.join(os.tmpdir(), zipFileName);
-      // fs.writeFileSync(zipFilePath, Buffer.from(await zipFile.arrayBuffer()));
-      // console.log("Zip file saved to", zipFilePath);
-      input.uploadUrl = await handleUploadFileToCloud(
-        env,
-        zipFile,
-        setUploadFilesProgress
-      );
-    }
+    const url = await handleUploadFileToCloud(env, file, setUploadFilesProgress);
+    return url;
+  }
+  async deployApp(input: srcAutobuildMutation$variables["input"]): Promise<AutobuildApp> {
+    const env = environment();
     let query: any = await new Promise((resolve, reject) => {
       commitMutation<srcAutobuildMutation>(env, {
         mutation: graphql`
