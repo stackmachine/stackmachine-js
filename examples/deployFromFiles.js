@@ -7,7 +7,7 @@ const client = await StackMachine.init({
 });
 
 console.log("Uploading file...");
-const appName = "file-upload-test7";
+const appName = "file-upload-test8";
 
 const zip = await createZip({
     "index.php": "<html><body><h1>Hello World!</h1></body></html>",

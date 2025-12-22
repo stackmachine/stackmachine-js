@@ -1,5 +1,5 @@
 /**
- * @generated SignedSource<<edaf0a3583f591f1fc806b07bd213629>>
+ * @generated SignedSource<<7dc03767ba1735c77c31f5168d795eda>>
  * @lightSyntaxTransform
  * @nogrep
  */
@@ -59,7 +59,11 @@ v4 = {
   "kind": "ScalarField",
   "name": "url",
   "storageKey": null
-};
+},
+v5 = [
+  (v3/*: any*/),
+  (v4/*: any*/)
+];
 return {
   "fragment": {
     "argumentDefinitions": (v0/*: any*/),
@@ -154,13 +158,126 @@ return {
                         "plural": false,
                         "selections": [
                           (v3/*: any*/),
-                          (v4/*: any*/)
+                          {
+                            "alias": null,
+                            "args": null,
+                            "kind": "ScalarField",
+                            "name": "hostname",
+                            "storageKey": null
+                          },
+                          (v4/*: any*/),
+                          {
+                            "alias": null,
+                            "args": null,
+                            "kind": "ScalarField",
+                            "name": "state",
+                            "storageKey": null
+                          },
+                          {
+                            "alias": null,
+                            "args": null,
+                            "kind": "ScalarField",
+                            "name": "redirectionHttpCode",
+                            "storageKey": null
+                          },
+                          {
+                            "alias": null,
+                            "args": null,
+                            "concreteType": "AppAlias",
+                            "kind": "LinkedField",
+                            "name": "redirectsFrom",
+                            "plural": true,
+                            "selections": (v5/*: any*/),
+                            "storageKey": null
+                          },
+                          {
+                            "alias": null,
+                            "args": null,
+                            "concreteType": "AppAlias",
+                            "kind": "LinkedField",
+                            "name": "redirectsTo",
+                            "plural": false,
+                            "selections": (v5/*: any*/),
+                            "storageKey": null
+                          },
+                          {
+                            "alias": null,
+                            "args": null,
+                            "concreteType": "AppAliasDNSRecord",
+                            "kind": "LinkedField",
+                            "name": "expectedDnsRecords",
+                            "plural": true,
+                            "selections": [
+                              {
+                                "alias": null,
+                                "args": null,
+                                "kind": "ScalarField",
+                                "name": "host",
+                                "storageKey": null
+                              },
+                              {
+                                "alias": null,
+                                "args": null,
+                                "kind": "ScalarField",
+                                "name": "recordType",
+                                "storageKey": null
+                              },
+                              {
+                                "alias": null,
+                                "args": null,
+                                "kind": "ScalarField",
+                                "name": "value",
+                                "storageKey": null
+                              }
+                            ],
+                            "storageKey": null
+                          },
+                          {
+                            "alias": null,
+                            "args": null,
+                            "kind": "ScalarField",
+                            "name": "firstCheckedAt",
+                            "storageKey": null
+                          },
+                          {
+                            "alias": null,
+                            "args": null,
+                            "kind": "ScalarField",
+                            "name": "lastCheckedAt",
+                            "storageKey": null
+                          },
+                          {
+                            "alias": null,
+                            "args": null,
+                            "kind": "ScalarField",
+                            "name": "updatedAt",
+                            "storageKey": null
+                          },
+                          {
+                            "alias": null,
+                            "args": null,
+                            "kind": "ScalarField",
+                            "name": "createdAt",
+                            "storageKey": null
+                          }
                         ],
                         "storageKey": null
                       }
                     ],
                     "storageKey": null
                   }
+                ],
+                "storageKey": null
+              },
+              {
+                "alias": null,
+                "args": null,
+                "concreteType": "DeployAppVersion",
+                "kind": "LinkedField",
+                "name": "activeVersion",
+                "plural": false,
+                "selections": [
+                  (v3/*: any*/)
                 ],
                 "storageKey": null
               },
@@ -188,12 +305,12 @@ return {
     ]
   },
   "params": {
-    "cacheID": "2d56cd2552c34cd4baca3002bf1dbf9b",
+    "cacheID": "d38efbf5246756ddfedc818dec9a1a2b",
     "id": null,
     "metadata": {},
     "name": "srcGetAppByIdQuery",
     "operationKind": "query",
-    "text": "query srcGetAppByIdQuery(\n  $id: ID!\n) {\n  app: node(id: $id) {\n    __typename\n    ...srcDeployAppData\n    id\n  }\n}\n\nfragment srcDeployAppData on DeployApp {\n  id\n  willPerishAt\n  name\n  url\n  adminUrl\n  domains {\n    edges {\n      node {\n        id\n        url\n      }\n    }\n  }\n  favicon\n  screenshot\n}\n"
+    "text": "query srcGetAppByIdQuery(\n  $id: ID!\n) {\n  app: node(id: $id) {\n    __typename\n    ...srcDeployAppData\n    id\n  }\n}\n\nfragment srcAppAlias on AppAlias {\n  id\n  hostname\n  url\n  state\n  redirectionHttpCode\n  redirectsFrom {\n    id\n    url\n  }\n  redirectsTo {\n    id\n    url\n  }\n  expectedDnsRecords {\n    host\n    recordType\n    value\n  }\n  firstCheckedAt\n  lastCheckedAt\n  updatedAt\n  createdAt\n}\n\nfragment srcDeployAppData on DeployApp {\n  id\n  willPerishAt\n  name\n  url\n  adminUrl\n  domains {\n    edges {\n      node {\n        ...srcAppAlias\n        id\n      }\n    }\n  }\n  activeVersion {\n    id\n  }\n  favicon\n  screenshot\n}\n"
   }
 };
 })();

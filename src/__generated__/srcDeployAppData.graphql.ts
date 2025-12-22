@@ -1,5 +1,5 @@
 /**
- * @generated SignedSource<<4839e898555aa60b91d974c746bec532>>
+ * @generated SignedSource<<838abe95e8815c2555b0ef7e37b967f2>>
  * @lightSyntaxTransform
  * @nogrep
  */
@@ -11,12 +11,14 @@
 import { ReaderFragment } from 'relay-runtime';
 import { FragmentRefs } from "relay-runtime";
 export type srcDeployAppData$data = {
+  readonly activeVersion: {
+    readonly id: string;
+  } | null | undefined;
   readonly adminUrl: string;
   readonly domains: {
     readonly edges: ReadonlyArray<{
       readonly node: {
-        readonly id: string;
-        readonly url: string;
+        readonly " $fragmentSpreads": FragmentRefs<"srcAppAlias">;
       } | null | undefined;
     } | null | undefined>;
   };
@@ -40,13 +42,6 @@ var v0 = {
   "kind": "ScalarField",
   "name": "id",
   "storageKey": null
-},
-v1 = {
-  "alias": null,
-  "args": null,
-  "kind": "ScalarField",
-  "name": "url",
-  "storageKey": null
 };
 return {
   "argumentDefinitions": [],
@@ -69,7 +64,13 @@ return {
       "name": "name",
       "storageKey": null
     },
-    (v1/*: any*/),
+    {
+      "alias": null,
+      "args": null,
+      "kind": "ScalarField",
+      "name": "url",
+      "storageKey": null
+    },
     {
       "alias": null,
       "args": null,
@@ -101,14 +102,29 @@ return {
               "name": "node",
               "plural": false,
               "selections": [
-                (v0/*: any*/),
-                (v1/*: any*/)
+                {
+                  "args": null,
+                  "kind": "FragmentSpread",
+                  "name": "srcAppAlias"
+                }
               ],
               "storageKey": null
             }
           ],
           "storageKey": null
         }
+      ],
+      "storageKey": null
+    },
+    {
+      "alias": null,
+      "args": null,
+      "concreteType": "DeployAppVersion",
+      "kind": "LinkedField",
+      "name": "activeVersion",
+      "plural": false,
+      "selections": [
+        (v0/*: any*/)
       ],
       "storageKey": null
     },
@@ -132,6 +148,6 @@ return {
 };
 })();
 
-(node as any).hash = "48a07f72f9cac3afe1dc2b0a646db030";
+(node as any).hash = "b2edc2167f5bf2099616ef0a61c267d5";
 
 export default node;
