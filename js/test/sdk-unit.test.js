@@ -3922,3 +3922,262 @@ test("apps.cronjobs rejects missing and unsuccessful mutation payloads", async (
     StackMachineAPIError,
   );
 });
+
+const yankResponse = (versions) =>
+  jsonResponse({
+    data: {
+      yankPackageVersions: { packageVersions: versions },
+    },
+  });
+
+const yankedVersionNode = (version, overrides = {}) => ({
+  id: `pkv_${version}`,
+  version,
+  yankedAt:
+    "yankedAt" in overrides ? overrides.yankedAt : "2024-01-01T00:00:00Z",
+  // `??` would clobber an explicit `null` reason, which is exactly what an
+  // unyanked version carries.
+  yankReason: "yankReason" in overrides ? overrides.yankReason : "bad build",
+});
+
+test("packages.retrieve maps lifecycle state and actor", async () => {
+  const node = packageVersionNode("version_1").package;
+  const fetch = mockFetch(() =>
+    jsonResponse({
+      data: {
+        getPackage: {
+          ...node,
+          isArchived: true,
+          archivedBy: { username: "alice" },
+        },
+      },
+    }),
+  );
+  const client = new StackMachine("key", { fetch });
+
+  const package_ = await client.packages.retrieve("tester/pkg-version_1");
+
+  assert.equal(package_.isArchived, true);
+  assert.equal(package_.archivedBy.username, "alice");
+  assert.equal(package_.lastVersion.distribution.webcVersion, "V3");
+  assert.deepEqual(fetch.calls[0].body.variables, {
+    name: "tester/pkg-version_1",
+  });
+});
+
+test("packages.versions.resolve maps yank state and rebuilds", async () => {
+  const base = packageVersionNode("version_1").package.lastVersion;
+  const fetch = mockFetch(() =>
+    jsonResponse({
+      data: {
+        getPackageVersion: {
+          ...base,
+          yankedAt: "2026-01-02T00:00:00Z",
+          yankReason: "bad build",
+          yankedBy: { username: "alice" },
+          rebuilds: [
+            { ...base, id: "version_1_rebuild", version: "0.1.0+wasix.1" },
+          ],
+        },
+      },
+    }),
+  );
+  const client = new StackMachine("key", { fetch });
+
+  const version = await client.packages.versions.resolve(
+    "tester/pkg-version_1",
+    ">=0.1.0",
+  );
+
+  assert.equal(version.yankedAt.toISOString(), "2026-01-02T00:00:00.000Z");
+  assert.equal(version.yankReason, "bad build");
+  assert.equal(version.yankedBy.username, "alice");
+  assert.equal(version.rebuilds[0].version, "0.1.0+wasix.1");
+  assert.deepEqual(fetch.calls[0].body.variables, {
+    name: "tester/pkg-version_1",
+    version: ">=0.1.0",
+  });
+});
+
+test("packages.versions.resolve returns null when no version matches", async () => {
+  const fetch = mockFetch(() =>
+    jsonResponse({ data: { getPackageVersion: null } }),
+  );
+  const client = new StackMachine("key", { fetch });
+
+  assert.equal(
+    await client.packages.versions.resolve("tester/missing", "latest"),
+    null,
+  );
+});
+
+test("packages.yank sends the input and maps the changed versions", async () => {
+  const fetch = mockFetch(() => yankResponse([yankedVersionNode("1.2.3")]));
+  const client = new StackMachine("key", { fetch });
+
+  const versions = await client.packages.yank(["pkv_1", "pkv_2"], {
+    reason: "bad build",
+  });
+
+  assert.equal(versions.length, 1);
+  assert.equal(versions[0].version, "1.2.3");
+  assert.equal(versions[0].yankedAt.toISOString(), "2024-01-01T00:00:00.000Z");
+  assert.equal(versions[0].yankReason, "bad build");
+
+  assert.equal(
+    fetch.calls[0].body.operationName,
+    "srcYankPackageVersionsMutation",
+  );
+  // The SDK adds its own `clientMutationId`, so compare the fields we set.
+  const { clientMutationId, ...input } = fetch.calls[0].body.variables.input;
+  assert.deepEqual(input, {
+    packageVersionIds: ["pkv_1", "pkv_2"],
+    reason: "bad build",
+    undo: false,
+  });
+  assert.ok(clientMutationId);
+});
+
+test("packages.yank accepts several version ids", async () => {
+  const fetch = mockFetch(() =>
+    yankResponse([yankedVersionNode("1.0.0"), yankedVersionNode("1.1.0")]),
+  );
+  const client = new StackMachine("key", { fetch });
+
+  const versions = await client.packages.yank(["pkv_a", "pkv_b"]);
+
+  assert.deepEqual(
+    versions.map((version) => version.version),
+    ["1.0.0", "1.1.0"],
+  );
+  assert.deepEqual(fetch.calls[0].body.variables.input.packageVersionIds, [
+    "pkv_a",
+    "pkv_b",
+  ]);
+  assert.equal(fetch.calls[0].body.variables.input.reason, null);
+});
+
+test("packages.unyank sets undo and clears the reason", async () => {
+  const fetch = mockFetch(() =>
+    yankResponse([
+      yankedVersionNode("1.2.3", { yankedAt: null, yankReason: null }),
+    ]),
+  );
+  const client = new StackMachine("key", { fetch });
+
+  const versions = await client.packages.unyank(["pkv_1"]);
+
+  assert.equal(versions[0].yankedAt, null);
+  assert.equal(versions[0].yankReason, null);
+  assert.deepEqual(fetch.calls[0].body.variables.input.packageVersionIds, [
+    "pkv_1",
+  ]);
+  assert.equal(fetch.calls[0].body.variables.input.undo, true);
+  assert.equal(fetch.calls[0].body.variables.input.reason, null);
+});
+
+test("packages.yank resolves to an empty array when nothing changed", async () => {
+  const fetch = mockFetch(() => yankResponse([]));
+  const client = new StackMachine("key", { fetch });
+
+  assert.deepEqual(await client.packages.yank(["pkv_1"]), []);
+});
+
+test("packages.yank surfaces permission errors from the registry", async () => {
+  const fetch = mockFetch(() =>
+    jsonResponse({
+      data: null,
+      errors: [
+        {
+          message:
+            "You do not have permission to yank versions of this package.",
+          extensions: { code: "FORBIDDEN" },
+        },
+      ],
+    }),
+  );
+  const client = new StackMachine("key", { fetch });
+
+  await assert.rejects(
+    client.packages.yank(["pkv_1"]),
+    StackMachineGraphQLError,
+  );
+});
+
+const packageIdResponse = (id) =>
+  jsonResponse({ data: { getPackage: { id } } });
+
+const setArchivedResponse = (isArchived) =>
+  jsonResponse({
+    data: { setPackageArchived: { package: { id: "pkg_1", isArchived } } },
+  });
+
+test("packages.archive resolves the id then archives", async () => {
+  const responses = [packageIdResponse("pkg_42"), setArchivedResponse(true)];
+  let call = 0;
+  const fetch = mockFetch(() => responses[call++]);
+  const client = new StackMachine("key", { fetch });
+
+  const archived = await client.packages.archive("tester/alpha");
+
+  assert.equal(archived, true);
+  assert.equal(fetch.calls[0].body.operationName, "srcGetPackageIdQuery");
+  assert.deepEqual(fetch.calls[0].body.variables, { name: "tester/alpha" });
+  assert.equal(
+    fetch.calls[1].body.operationName,
+    "srcSetPackageArchivedMutation",
+  );
+  assert.deepEqual(fetch.calls[1].body.variables, {
+    id: "pkg_42",
+    archived: true,
+  });
+});
+
+test("packages.unarchive sends the resolved id", async () => {
+  const responses = [packageIdResponse("pkg_7"), setArchivedResponse(false)];
+  let call = 0;
+  const fetch = mockFetch(() => responses[call++]);
+  const client = new StackMachine("key", { fetch });
+
+  const archived = await client.packages.unarchive("tester/alpha");
+
+  assert.equal(archived, false);
+  assert.deepEqual(fetch.calls[1].body.variables, {
+    id: "pkg_7",
+    archived: false,
+  });
+});
+
+test("packages.archive throws when the package is not found", async () => {
+  const fetch = mockFetch(() => jsonResponse({ data: { getPackage: null } }));
+  const client = new StackMachine("key", { fetch });
+
+  await assert.rejects(
+    client.packages.archive("tester/missing"),
+    StackMachineAPIError,
+  );
+});
+
+test("packages.setArchived sends the boolean", async () => {
+  const responses = [
+    packageIdResponse("pkg_5"),
+    setArchivedResponse(true),
+    packageIdResponse("pkg_5"),
+    setArchivedResponse(false),
+  ];
+  let call = 0;
+  const fetch = mockFetch(() => responses[call++]);
+  const client = new StackMachine("key", { fetch });
+
+  assert.equal(await client.packages.setArchived("tester/alpha", true), true);
+  assert.equal(await client.packages.setArchived("tester/alpha", false), false);
+
+  assert.deepEqual(fetch.calls[1].body.variables, {
+    id: "pkg_5",
+    archived: true,
+  });
+  assert.deepEqual(fetch.calls[3].body.variables, {
+    id: "pkg_5",
+    archived: false,
+  });
+});

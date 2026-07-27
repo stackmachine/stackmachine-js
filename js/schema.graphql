@@ -629,12 +629,13 @@ type AppVolumeEdge {
   node: AppVolume!
 }
 
-input ArchivePackageInput {
+input SetPackageArchivedInput {
+  archived: Boolean!
   clientMutationId: String
   packageId: ID!
 }
 
-type ArchivePackagePayload {
+type SetPackageArchivedPayload {
   clientMutationId: String
   package: Package!
 }
@@ -3263,7 +3264,7 @@ type Mutation {
 
   """Add an SSH authorized key to an SSH user."""
   addSshAuthorizedKey(input: AddSshAuthorizedKeyInput!): AddSshAuthorizedKeyPayload
-  archivePackage(input: ArchivePackageInput!): ArchivePackagePayload
+  setPackageArchived(input: SetPackageArchivedInput!): SetPackageArchivedPayload
 
   """Attach vault to an app"""
   attachVault(input: AttachVaultInput!): AttachVaultPayload
@@ -3534,6 +3535,13 @@ type Mutation {
   """Detach autobuild from app."""
   verifyAppDomain(input: VerifyAppDomainInput!): VerifyAppDomainPayload
   watchPackage(input: WatchPackageInput!): WatchPackagePayload
+
+  """
+  Yank (or, with `undo`, unyank) an explicit set of package-version node ids,
+  all belonging to one package. Yanked versions still resolve when pinned
+  exactly, but are excluded from `latest` and from semver-range resolution.
+  """
+  yankPackageVersions(input: YankPackageVersionsInput!): YankPackageVersionsPayload
 }
 
 type NSRecord implements DNSRecordInterface & Node {
@@ -3912,6 +3920,7 @@ type Package implements Likeable & Node & PackageOwner {
   """The ID of the object"""
   id: ID!
   isArchived: Boolean!
+  archivedBy: User
   isTransferring: Boolean!
   keywords(after: String, before: String, first: Int, last: Int, offset: Int): PackageKeywordConnection!
   lastVersion: PackageVersion
@@ -4292,6 +4301,7 @@ type PackageVersion implements Node & PackageInstance & PackageReleaseInterface 
   pythonBindings: PackageVersionPythonBinding
   pythonlanguagebindingSet(after: String, before: String, first: Int, last: Int, offset: Int): PackageVersionPythonBindingConnection!
   readme: String
+  rebuilds: [PackageVersion!]!
   repository: String
   showDeployButton: Boolean!
   signature: Signature
@@ -4305,6 +4315,13 @@ type PackageVersion implements Node & PackageInstance & PackageReleaseInterface 
   webcV3: WebcImage
   witFile: String
   witMd: String
+
+  """Why the version was yanked, if a reason was supplied."""
+  yankReason: String
+
+  """When the version was yanked, or `null` if it is not yanked."""
+  yankedAt: DateTime
+  yankedBy: User
 }
 
 union PackageVersionBinding = PackageVersionNPMBinding | PackageVersionPythonBinding
@@ -7090,6 +7107,32 @@ type WorkloadMetrics {
   realCpuTimeMillis: BigInt!
   wallCpuTimeMillis: BigInt!
   workloads: Int!
+}
+
+"""
+Input for the `yankPackageVersions` mutation. Operates on an explicit set of
+version node ids (all belonging to one package); range expansion is a client
+concern. Requires package-admin rights.
+"""
+input YankPackageVersionsInput {
+  clientMutationId: String
+
+  """The `PackageVersion` node ids to act on. Must share a package."""
+  packageVersionIds: [ID!]!
+
+  """Why the versions were yanked. Surfaced to anyone still pinning them."""
+  reason: String
+
+  """Unyank the given versions instead of yanking them."""
+  undo: Boolean
+}
+
+type YankPackageVersionsPayload {
+  clientMutationId: String
+  package: Package!
+
+  """Only the versions whose yank state actually changed."""
+  packageVersions: [PackageVersion!]!
 }
 
 type ZipRollout implements Node {

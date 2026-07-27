@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shlex
 import zipfile
+from datetime import datetime, timezone
 from importlib.metadata import version
 from io import BytesIO
 from typing import Any, Optional, get_type_hints
@@ -2389,6 +2390,79 @@ def search_response(
     )
 
 
+def test_packages_retrieve_maps_lifecycle_state() -> None:
+    package = package_version_payload()["package"]
+    package.update({"isArchived": True, "archivedBy": {"username": "alice"}})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["variables"] == {"name": "tester/alpha"}
+        return graphql_response({"getPackage": package})
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        result = client.packages.retrieve("tester/alpha")
+
+    assert result.is_archived is True
+    assert result.archived_by is not None
+    assert result.archived_by.username == "alice"
+    assert result.last_version is not None
+    assert result.last_version.distribution.webc_version == "V3"
+
+
+def test_packages_versions_resolve_maps_lifecycle_and_rebuilds() -> None:
+    version = package_version_payload()["package"]["lastVersion"]
+    version.update(
+        {
+            "yankedAt": "2026-01-02T00:00:00Z",
+            "yankReason": "bad build",
+            "yankedBy": {"username": "alice"},
+            "rebuilds": [{**version, "id": "rebuild_1", "version": "0.1.0+wasix.1"}],
+        }
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["variables"] == {
+            "name": "tester/alpha",
+            "version": ">=0.1.0",
+        }
+        return graphql_response({"getPackageVersion": version})
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        result = client.packages.versions.resolve("tester/alpha", ">=0.1.0")
+
+    assert result is not None
+    assert result.yanked_at == datetime(2026, 1, 2, tzinfo=timezone.utc)
+    assert result.yank_reason == "bad build"
+    assert result.yanked_by is not None
+    assert result.yanked_by.username == "alice"
+    assert result.rebuilds[0].version == "0.1.0+wasix.1"
+
+
+async def test_async_packages_retrieve_and_resolve() -> None:
+    package = package_version_payload()["package"]
+    package.update({"isArchived": False, "archivedBy": None})
+    version = package["lastVersion"]
+    version.update(
+        {"yankedAt": None, "yankReason": None, "yankedBy": None, "rebuilds": []}
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "srcGetPackageQuery" in body["query"]:
+            return graphql_response({"getPackage": package})
+        return graphql_response({"getPackageVersion": version})
+
+    client = AsyncStackMachine("secret", http_transport=httpx.MockTransport(handler))
+    try:
+        retrieved = await client.packages.retrieve("tester/alpha")
+        resolved = await client.packages.versions.resolve("tester/alpha", "latest")
+    finally:
+        await client.close()
+
+    assert retrieved.is_archived is False
+    assert resolved is not None
+    assert resolved.version == "0.1.0"
+
+
 def test_packages_search_maps_results_and_sends_filter() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -2496,3 +2570,224 @@ async def test_async_packages_search() -> None:
         await client.close()
 
     assert [result.package.package_name for result in page.data] == ["alpha"]
+
+
+def yank_response(versions: list[dict[str, Any]]) -> httpx.Response:
+    return graphql_response({"yankPackageVersions": {"packageVersions": versions}})
+
+
+def yanked_version_payload(
+    version: str, *, is_yanked: bool = True, reason: Optional[str] = "bad build"
+) -> dict[str, Any]:
+    return {
+        "id": f"pkv_{version}",
+        "version": version,
+        "yankedAt": "2024-01-01T00:00:00Z" if is_yanked else None,
+        "yankReason": reason,
+    }
+
+
+def test_packages_yank_sends_input_and_maps_results() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content)["variables"])
+        return yank_response([yanked_version_payload("1.2.3")])
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        result = client.packages.yank(["pkv_1", "pkv_2"], reason="bad build")
+
+    assert [version.version for version in result] == ["1.2.3"]
+    assert result[0].yanked_at == datetime(2024, 1, 1, tzinfo=timezone.utc)
+    assert result[0].yank_reason == "bad build"
+    assert calls[0]["input"] == {
+        "packageVersionIds": ["pkv_1", "pkv_2"],
+        "reason": "bad build",
+        "undo": False,
+    }
+
+
+def test_packages_yank_accepts_several_ids() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content)["variables"])
+        return yank_response(
+            [yanked_version_payload("1.0.0"), yanked_version_payload("1.1.0")]
+        )
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        result = client.packages.yank(["pkv_a", "pkv_b"])
+
+    assert [version.version for version in result] == ["1.0.0", "1.1.0"]
+    assert calls[0]["input"]["packageVersionIds"] == ["pkv_a", "pkv_b"]
+    # `None` values are pruned from the payload by `_clean_json`, so an
+    # omitted reason must not be sent as an explicit `null`.
+    assert "reason" not in calls[0]["input"]
+
+
+def test_packages_unyank_sets_undo_and_omits_reason() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content)["variables"])
+        return yank_response(
+            [yanked_version_payload("1.2.3", is_yanked=False, reason=None)]
+        )
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        result = client.packages.unyank(["pkv_1"])
+
+    assert result[0].yanked_at is None
+    assert result[0].yank_reason is None
+    assert calls[0]["input"]["packageVersionIds"] == ["pkv_1"]
+    assert calls[0]["input"]["undo"] is True
+    assert "reason" not in calls[0]["input"]
+
+
+def test_packages_yank_returns_empty_when_nothing_changed() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return yank_response([])
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        result = client.packages.yank(["pkv_1"])
+
+    assert result == []
+
+
+def test_packages_yank_propagates_permission_errors() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": None,
+                "errors": [
+                    {
+                        "message": (
+                            "You do not have permission to yank versions of "
+                            "this package."
+                        ),
+                        "extensions": {"code": "FORBIDDEN"},
+                    }
+                ],
+            },
+        )
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(StackMachineGraphQLError) as exc_info:
+            client.packages.yank(["pkv_1"])
+
+    assert "permission" in str(exc_info.value)
+
+
+async def test_async_packages_yank_and_unyank() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content)["variables"])
+        return yank_response([yanked_version_payload("1.2.3")])
+
+    client = AsyncStackMachine("secret", http_transport=httpx.MockTransport(handler))
+    try:
+        yanked = await client.packages.yank(["pkv_1"], reason="oops")
+        await client.packages.unyank(["pkv_1"])
+    finally:
+        await client.close()
+
+    assert [version.version for version in yanked] == ["1.2.3"]
+    assert calls[0]["input"]["undo"] is False
+    assert calls[0]["input"]["reason"] == "oops"
+    assert calls[1]["input"]["undo"] is True
+
+
+def package_id_response(package_id: str = "pkg_1") -> httpx.Response:
+    return graphql_response({"getPackage": {"id": package_id}})
+
+
+def set_archived_response(is_archived: bool) -> httpx.Response:
+    return graphql_response(
+        {"setPackageArchived": {"package": {"id": "pkg_1", "isArchived": is_archived}}}
+    )
+
+
+def test_packages_archive_resolves_id_then_archives() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        if "getPackage" in body["query"]:
+            return package_id_response("pkg_42")
+        return set_archived_response(True)
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        archived = client.packages.archive("tester/alpha")
+
+    assert archived is True
+    assert calls[0]["variables"] == {"name": "tester/alpha"}
+    assert calls[1]["variables"] == {"id": "pkg_42", "archived": True}
+
+
+def test_packages_unarchive_sends_resolved_id() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        if "getPackage" in body["query"]:
+            return package_id_response("pkg_7")
+        return set_archived_response(False)
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        archived = client.packages.unarchive("tester/alpha")
+
+    assert archived is False
+    assert calls[1]["variables"] == {"id": "pkg_7", "archived": False}
+
+
+def test_packages_archive_raises_when_package_missing() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return graphql_response({"getPackage": None})
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(StackMachineAPIError):
+            client.packages.archive("tester/missing")
+
+
+async def test_async_packages_archive_round_trip() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        if "getPackage" in body["query"]:
+            return package_id_response("pkg_9")
+        return set_archived_response(bool(body["variables"]["archived"]))
+
+    client = AsyncStackMachine("secret", http_transport=httpx.MockTransport(handler))
+    try:
+        assert await client.packages.archive("tester/alpha") is True
+        assert await client.packages.unarchive("tester/alpha") is False
+    finally:
+        await client.close()
+
+    assert calls[1]["variables"] == {"id": "pkg_9", "archived": True}
+    assert calls[3]["variables"] == {"id": "pkg_9", "archived": False}
+
+
+def test_packages_set_archived_sends_boolean() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        if "getPackage" in body["query"]:
+            return package_id_response("pkg_5")
+        return set_archived_response(bool(body["variables"]["archived"]))
+
+    with StackMachine("secret", http_transport=httpx.MockTransport(handler)) as client:
+        assert client.packages.set_archived("tester/alpha", True) is True
+        assert client.packages.set_archived("tester/alpha", False) is False
+
+    assert calls[1]["variables"] == {"id": "pkg_5", "archived": True}
+    assert calls[3]["variables"] == {"id": "pkg_5", "archived": False}
