@@ -1478,6 +1478,87 @@ query srcSearchPackagesQuery(
 }}
 """
 
+PACKAGE_DISTRIBUTION_FIELDS = """
+piritaSha256Hash
+piritaDownloadUrl
+downloadUrl
+size
+piritaSize
+webcVersion
+webcManifest
+"""
+
+GET_PACKAGE_QUERY = f"""
+query srcGetPackageQuery($name: String!) {{
+  getPackage(name: $name) {{
+    id
+    packageName
+    namespace
+    private
+    isArchived
+    archivedBy {{ username }}
+    lastVersion {{
+      id
+      version
+      createdAt
+      distribution {{ {PACKAGE_DISTRIBUTION_FIELDS} }}
+    }}
+  }}
+}}
+"""
+
+RESOLVE_PACKAGE_VERSION_QUERY = f"""
+query srcResolvePackageVersionQuery($name: String!, $version: String!) {{
+  getPackageVersion(name: $name, version: $version) {{
+    id
+    version
+    createdAt
+    distribution {{ {PACKAGE_DISTRIBUTION_FIELDS} }}
+    yankedAt
+    yankReason
+    yankedBy {{ username }}
+    rebuilds {{
+      id
+      version
+      createdAt
+      distribution {{ {PACKAGE_DISTRIBUTION_FIELDS} }}
+    }}
+  }}
+}}
+"""
+
+YANK_PACKAGE_VERSIONS_MUTATION = """
+mutation srcYankPackageVersionsMutation($input: YankPackageVersionsInput!) {
+  yankPackageVersions(input: $input) {
+    packageVersions {
+      id
+      version
+      yankedAt
+      yankReason
+    }
+  }
+}
+"""
+
+GET_PACKAGE_ID_QUERY = """
+query srcGetPackageIdQuery($name: String!) {
+  getPackage(name: $name) {
+    id
+  }
+}
+"""
+
+SET_PACKAGE_ARCHIVED_MUTATION = """
+mutation srcSetPackageArchivedMutation($id: ID!, $archived: Boolean!) {
+  setPackageArchived(input: { packageId: $id, archived: $archived }) {
+    package {
+      id
+      isArchived
+    }
+  }
+}
+"""
+
 GET_APP_CACHE_QUERY = """
 query srcGetAppCacheQuery($id: ID!) {
   node(id: $id) {

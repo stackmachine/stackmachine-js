@@ -4,6 +4,11 @@ import nodeAppAlias, {
   srcAppAlias$data,
 } from "__generated__/srcAppAlias.graphql";
 import { srcDeleteAppMutation } from "__generated__/srcDeleteAppMutation.graphql";
+import { srcYankPackageVersionsMutation } from "__generated__/srcYankPackageVersionsMutation.graphql";
+import { srcSetPackageArchivedMutation } from "__generated__/srcSetPackageArchivedMutation.graphql";
+import { srcGetPackageIdQuery } from "__generated__/srcGetPackageIdQuery.graphql";
+import { srcGetPackageQuery } from "__generated__/srcGetPackageQuery.graphql";
+import { srcResolvePackageVersionQuery } from "__generated__/srcResolvePackageVersionQuery.graphql";
 import nodeAppDatabase, {
   srcAppDatabaseData$data,
 } from "__generated__/srcAppDatabaseData.graphql";
@@ -5723,6 +5728,22 @@ export interface Package {
   private: boolean;
 }
 
+export interface PackageActor {
+  username: string;
+}
+
+export interface PackageDetails extends Package {
+  isArchived: boolean;
+  archivedBy: PackageActor | null;
+}
+
+export interface ResolvedPackageVersion extends PackageVersion {
+  yankedAt: Date | null;
+  yankReason: string | null;
+  yankedBy: PackageActor | null;
+  rebuilds: PackageVersion[];
+}
+
 export class SearchPackageVersion {
   static fragment = graphql`
     fragment srcSearchPackageVersionData on PackageVersion {
@@ -5783,6 +5804,18 @@ export type PackagesSearchInput = StackMachinePaginationParams & {
   filter?: PackagesFilter;
 };
 
+export type PackageYankInput = {
+  /** Why the versions are being yanked. Shown to users who still pin them. */
+  reason?: string | null;
+};
+
+export interface YankedPackageVersion {
+  id: string;
+  version: string;
+  yankedAt: Date | null;
+  yankReason: string | null;
+}
+
 function mapPackageDistribution(distribution: any): PackageDistribution {
   return {
     piritaSha256Hash: distribution?.piritaSha256Hash ?? null,
@@ -5805,6 +5838,72 @@ function mapPackageVersion(version: any): PackageVersion | null {
     createdAt: parseDate(version.createdAt)!,
     distribution: mapPackageDistribution(version.distribution),
   };
+}
+
+export class PackageVersionsResource {
+  constructor(private client: SdkContext) {}
+
+  /** Resolve an exact version, semver range, or tag such as `latest`. */
+  async resolve(
+    packageName: string,
+    selector: string,
+    options?: StackMachineRequestOptions,
+  ): Promise<ResolvedPackageVersion | null> {
+    const response = await this.client._query<srcResolvePackageVersionQuery>(
+      graphql`
+        query srcResolvePackageVersionQuery($name: String!, $version: String!) {
+          getPackageVersion(name: $name, version: $version) {
+            id
+            version
+            createdAt
+            distribution {
+              piritaSha256Hash
+              piritaDownloadUrl
+              downloadUrl
+              size
+              piritaSize
+              webcVersion
+              webcManifest
+            }
+            yankedAt
+            yankReason
+            yankedBy {
+              username
+            }
+            rebuilds {
+              id
+              version
+              createdAt
+              distribution {
+                piritaSha256Hash
+                piritaDownloadUrl
+                downloadUrl
+                size
+                piritaSize
+                webcVersion
+                webcManifest
+              }
+            }
+          }
+        }
+      `,
+      { name: packageName, version: selector },
+      options,
+    );
+    const version = response.getPackageVersion;
+    if (!version) {
+      return null;
+    }
+    return {
+      ...mapPackageVersion(version)!,
+      yankedAt: parseDate(version.yankedAt),
+      yankReason: version.yankReason ?? null,
+      yankedBy: version.yankedBy
+        ? { username: version.yankedBy.username }
+        : null,
+      rebuilds: version.rebuilds.map((rebuild) => mapPackageVersion(rebuild)!),
+    };
+  }
 }
 
 // `PackagesFilter` is one nested `$packages` variable, so its `DateTime` fields
@@ -5830,7 +5929,70 @@ function serializePackagesFilter(
 }
 
 export class PackagesResource {
-  constructor(private client: SdkContext) {}
+  versions: PackageVersionsResource;
+
+  constructor(private client: SdkContext) {
+    this.versions = new PackageVersionsResource(client);
+  }
+
+  /** Retrieve a package by its fully-qualified registry name. */
+  async retrieve(
+    packageName: string,
+    options?: StackMachineRequestOptions,
+  ): Promise<PackageDetails> {
+    const response = await this.client._query<srcGetPackageQuery>(
+      graphql`
+        query srcGetPackageQuery($name: String!) {
+          getPackage(name: $name) {
+            id
+            packageName
+            namespace
+            private
+            isArchived
+            archivedBy {
+              username
+            }
+            lastVersion {
+              id
+              version
+              createdAt
+              distribution {
+                piritaSha256Hash
+                piritaDownloadUrl
+                downloadUrl
+                size
+                piritaSize
+                webcVersion
+                webcManifest
+              }
+            }
+          }
+        }
+      `,
+      { name: packageName },
+      options,
+    );
+    const package_ = response.getPackage;
+    if (!package_) {
+      throw resourceMissingError(
+        "package",
+        packageName,
+        "srcGetPackageQuery",
+        "name",
+      );
+    }
+    return {
+      id: package_.id,
+      packageName: package_.packageName,
+      namespace: package_.namespace ?? null,
+      private: package_.private,
+      lastVersion: mapPackageVersion(package_.lastVersion),
+      isArchived: package_.isArchived,
+      archivedBy: package_.archivedBy
+        ? { username: package_.archivedBy.username }
+        : null,
+    };
+  }
 
   /**
    * Search the registry for packages. Results are the latest version of each
@@ -5913,6 +6075,142 @@ export class PackagesResource {
         );
       },
     });
+  }
+
+  /**
+   * Yank the given package versions, by node id. Requires package-admin
+   * rights, and all ids must belong to the same package. A yanked version
+   * still resolves when pinned exactly. It is skipped by `latest` and by
+   * semver-range resolution. Resolves to only the versions whose yank state
+   * changed, so re-yanking an already-yanked version resolves to an empty
+   * array.
+   */
+  async yank(
+    versionIds: string[],
+    input: PackageYankInput = {},
+    options?: StackMachineRequestOptions,
+  ): Promise<YankedPackageVersion[]> {
+    return this.yankPackageVersions(
+      versionIds,
+      input.reason ?? null,
+      false,
+      options,
+    );
+  }
+
+  /** Restore the given previously yanked package versions, by node id. */
+  async unyank(
+    versionIds: string[],
+    options?: StackMachineRequestOptions,
+  ): Promise<YankedPackageVersion[]> {
+    return this.yankPackageVersions(versionIds, null, true, options);
+  }
+
+  private async yankPackageVersions(
+    versionIds: string[],
+    reason: string | null,
+    undo: boolean,
+    options?: StackMachineRequestOptions,
+  ): Promise<YankedPackageVersion[]> {
+    const response =
+      await this.client._mutation<srcYankPackageVersionsMutation>(
+        graphql`
+          mutation srcYankPackageVersionsMutation(
+            $input: YankPackageVersionsInput!
+          ) {
+            yankPackageVersions(input: $input) {
+              packageVersions {
+                id
+                version
+                yankedAt
+                yankReason
+              }
+            }
+          }
+        `,
+        {
+          input: { packageVersionIds: versionIds, reason, undo },
+        },
+        options,
+      );
+
+    return (response.yankPackageVersions?.packageVersions ?? []).map(
+      (version) => ({
+        id: version.id,
+        version: version.version,
+        yankedAt: parseDate(version.yankedAt),
+        yankReason: version.yankReason ?? null,
+      }),
+    );
+  }
+
+  /**
+   * Set (or clear) a package's archived state. Requires package-admin rights.
+   * Archiving hides the package from search and listings. It has no effect on
+   * resolution, so apps and dependencies already pointing at it keep working.
+   */
+  async setArchived(
+    packageName: string,
+    archived: boolean,
+    options?: StackMachineRequestOptions,
+  ): Promise<boolean> {
+    const id = await this.resolvePackageId(packageName, options);
+    const response = await this.client._mutation<srcSetPackageArchivedMutation>(
+      graphql`
+        mutation srcSetPackageArchivedMutation($id: ID!, $archived: Boolean!) {
+          setPackageArchived(input: { packageId: $id, archived: $archived }) {
+            package {
+              id
+              isArchived
+            }
+          }
+        }
+      `,
+      { id, archived },
+      options,
+    );
+    return response.setPackageArchived?.package.isArchived ?? false;
+  }
+
+  /** Archive (delist) a package. Shorthand for `setArchived(name, true)`. */
+  async archive(
+    packageName: string,
+    options?: StackMachineRequestOptions,
+  ): Promise<boolean> {
+    return this.setArchived(packageName, true, options);
+  }
+
+  /** Restore a previously archived package. `setArchived(name, false)`. */
+  async unarchive(
+    packageName: string,
+    options?: StackMachineRequestOptions,
+  ): Promise<boolean> {
+    return this.setArchived(packageName, false, options);
+  }
+
+  private async resolvePackageId(
+    packageName: string,
+    options?: StackMachineRequestOptions,
+  ): Promise<string> {
+    const response = await this.client._query<srcGetPackageIdQuery>(
+      graphql`
+        query srcGetPackageIdQuery($name: String!) {
+          getPackage(name: $name) {
+            id
+          }
+        }
+      `,
+      { name: packageName },
+      options,
+    );
+    const id = response.getPackage?.id;
+    if (!id) {
+      throw new StackMachineAPIError({
+        message: `Package '${packageName}' was not found.`,
+        operationName: "srcGetPackageIdQuery",
+      });
+    }
+    return id;
   }
 }
 

@@ -988,6 +988,80 @@ class Package:
 
 
 @dataclass
+class PackageActor:
+    username: str
+
+    @classmethod
+    def from_graphql(cls, data: Mapping[str, Any]) -> "PackageActor":
+        return cls(username=str(data["username"]))
+
+
+@dataclass
+class PackageDetails(Package):
+    is_archived: bool
+    archived_by: Optional[PackageActor]
+
+    @classmethod
+    def from_graphql(cls, data: Mapping[str, Any]) -> "PackageDetails":
+        package = Package.from_graphql(data)
+        archived_by = data.get("archivedBy")
+        return cls(
+            id=package.id,
+            package_name=package.package_name,
+            namespace=package.namespace,
+            last_version=package.last_version,
+            private=package.private,
+            is_archived=bool(data["isArchived"]),
+            archived_by=(
+                PackageActor.from_graphql(archived_by) if archived_by else None
+            ),
+        )
+
+
+@dataclass
+class ResolvedPackageVersion(PackageVersion):
+    yanked_at: Optional[datetime]
+    yank_reason: Optional[str]
+    yanked_by: Optional[PackageActor]
+    rebuilds: List[PackageVersion]
+
+    @classmethod
+    def from_graphql(cls, data: Mapping[str, Any]) -> "ResolvedPackageVersion":
+        version = PackageVersion.from_graphql(data)
+        yanked_by = data.get("yankedBy")
+        return cls(
+            id=version.id,
+            version=version.version,
+            created_at=version.created_at,
+            distribution=version.distribution,
+            yanked_at=parse_datetime(data.get("yankedAt")),
+            yank_reason=data.get("yankReason"),
+            yanked_by=PackageActor.from_graphql(yanked_by) if yanked_by else None,
+            rebuilds=[
+                PackageVersion.from_graphql(rebuild)
+                for rebuild in data.get("rebuilds") or []
+            ],
+        )
+
+
+@dataclass
+class YankedPackageVersion:
+    id: str
+    version: str
+    yanked_at: Optional[datetime]
+    yank_reason: Optional[str]
+
+    @classmethod
+    def from_graphql(cls, data: Mapping[str, Any]) -> "YankedPackageVersion":
+        return cls(
+            id=str(data["id"]),
+            version=str(data["version"]),
+            yanked_at=parse_datetime(data.get("yankedAt")),
+            yank_reason=data.get("yankReason"),
+        )
+
+
+@dataclass
 class SearchPackageVersion:
     id: str
     version: str
